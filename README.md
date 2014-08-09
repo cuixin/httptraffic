@@ -1,4 +1,4 @@
 http traffic example writen by golang
 =======
 
-The minimum golang version is 1.3
+Need the minimum golang version is 1.3

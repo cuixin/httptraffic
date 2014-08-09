@@ -1,8 +1,7 @@
-package main
+package httptraffic
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -10,8 +9,8 @@ import (
 )
 
 var (
-	period_second_num  = 1
-	max_per_second_msg = 3 // max period second message number
+	PeriodSecondNum = 1
+	MaxPerSecondMsg = 3 // max period second message number
 )
 
 type httpTraffic struct {
@@ -22,26 +21,32 @@ type httpTraffic struct {
 	lastNCount  int
 }
 
-var ConnMan = &ConnManager{make(map[string]*httpTraffic, 10240), sync.Mutex{}}
+var connMan = &connManager{connMap: make(map[string]*httpTraffic, 16<<10)}
 
-func onConnState(c net.Conn, s http.ConnState) {
+var OnKilled func(c net.Conn)
+
+func OnConnState(c net.Conn, s http.ConnState) {
 	remoteAddr := c.RemoteAddr().String()
 	switch s {
 	case http.StateNew:
-		ConnMan.NewConn(remoteAddr, c)
+		connMan.NewConn(remoteAddr, c)
 	case http.StateActive:
-		traffic, err := ConnMan.GetConn(remoteAddr)
+		traffic, err := connMan.GetConn(remoteAddr)
 		if err != nil {
-			log.Println("Error Get", remoteAddr)
+			// log.Println("Error Get", remoteAddr)
+			panic(err)
 		} else {
 			timeNow := time.Now()
 			traffic.packetCount++
 			traffic.lastNCount++
-			if traffic.lastNCount >= max_per_second_msg {
+			if traffic.lastNCount >= MaxPerSecondMsg {
 				elapseSecond := timeNow.Second() - traffic.lastNTime.Second()
-				if elapseSecond >= period_second_num || elapseSecond == 0 {
-					log.Println("Killed User", remoteAddr)
+				if elapseSecond >= PeriodSecondNum || elapseSecond == 0 {
+					// log.Println("Killed User", remoteAddr)
 					c.Close()
+					if OnKilled != nil {
+						OnKilled(c)
+					}
 					return
 				}
 				traffic.lastNTime = timeNow
@@ -49,17 +54,17 @@ func onConnState(c net.Conn, s http.ConnState) {
 			}
 		}
 	case http.StateClosed:
-		ConnMan.RemoveConn(remoteAddr)
+		connMan.RemoveConn(remoteAddr)
 	}
 }
 
-type ConnManager struct {
+type connManager struct {
 	connMap map[string]*httpTraffic
-	mu      sync.Mutex
+	sync.Mutex
 }
 
-func (this *ConnManager) NewConn(remoteAddr string, c net.Conn) (err error) {
-	this.mu.Lock()
+func (this *connManager) NewConn(remoteAddr string, c net.Conn) (err error) {
+	this.Lock()
 	if _, ok := this.connMap[remoteAddr]; ok {
 		err = fmt.Errorf("RemoteAddr %v existed", remoteAddr)
 	} else {
@@ -70,37 +75,36 @@ func (this *ConnManager) NewConn(remoteAddr string, c net.Conn) (err error) {
 			packetCount: 0,
 			lastNTime:   now,
 			lastNCount:  0}
-		log.Println(remoteAddr, "connected")
+		// log.Println(remoteAddr, "connected")
 	}
-	this.mu.Unlock()
+	this.Unlock()
 	return
 }
 
-func (this *ConnManager) GetConn(remoteAddr string) (c *httpTraffic, err error) {
-	this.mu.Lock()
+func (this *connManager) GetConn(remoteAddr string) (c *httpTraffic, err error) {
+	this.Lock()
 	var ok bool
 	if c, ok = this.connMap[remoteAddr]; !ok {
 		err = fmt.Errorf("RemoteAddr %v not existed", remoteAddr)
 	}
-	this.mu.Unlock()
+	this.Unlock()
 	return
 }
 
-func (this *ConnManager) RemoveConn(remoteAddr string) (c *httpTraffic, err error) {
-	this.mu.Lock()
+func (this *connManager) RemoveConn(remoteAddr string) (c *httpTraffic, err error) {
+	this.Lock()
 	var ok bool
 	if c, ok = this.connMap[remoteAddr]; !ok {
 		err = fmt.Errorf("RemoteAddr %v not existed", remoteAddr)
 	}
-	log.Printf("%s disconnected, packet count: %d online second: %v\n", remoteAddr, c.packetCount, time.Now().Sub(c.connectTime).Seconds())
-
-	this.mu.Unlock()
+	// log.Printf("%s disconnected, packet count: %d online second: %v\n", remoteAddr, c.packetCount, time.Now().Sub(c.connectTime).Seconds())
+	this.Unlock()
 	return
 }
 
-func (this *ConnManager) Count() (num int) {
-	this.mu.Lock()
+func (this *connManager) Count() (num int) {
+	this.Lock()
 	num = len(this.connMap)
-	this.mu.Unlock()
+	this.Unlock()
 	return
 }
